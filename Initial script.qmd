@@ -4,16 +4,17 @@ format: html
 editor: visual
 ---
 
-```{r warning=FALSE, message=FALSE}
+```{r include=FALSE}
 # Packages
 library(readr)
 library(tidyverse)
 library(dplyr)
 library(stringr)
 library(RSelenium)
+library(openalexR)
 ```
 
-```{r warning=FALSE, message=FALSE}
+```{r include=FALSE}
 # Loading data
 X5201_data <- read_csv("~/Downloads/Data/Altmetric - Research Outputs - London School of Economics and Political Science - 2024-10-24.csv")
 X5202_data <- read_csv("~/Downloads/Data/Altmetric - Research Outputs - London School of Economics and Political Science - 2024-10-24 (4).csv")
@@ -37,91 +38,13 @@ There is some overlap between the datasets, so we'll remove duplicates.
 altmetrics_data <- distinct(altmetrics_data)
 ```
 
+View names for exploration purposes
+
 ```{r}
 names(altmetrics_data)
 ```
 
-**What is included in this data:**
-
--   All article publications in the category 'psychology' listed on Dimensions.ai database.
-
-**What isn't included:**
-
--   Books
-
--   Book chapters
-
--   Data sets
-
--   Clinical trial records
-
--   News stories
-
-**What information do we get on each source**
-
--   Impact measure: altmetrics
-
-    -   Overall altmetrics score
-
-    -   News mentions
-
-    -   Blog mentions
-
-    -   Policy mentions
-
-    -   Patent mentions
-
-    -   X mentions
-
-    -   Peer review mentions
-
-    -   Weibo mentions
-
-    -   Facebook mentions
-
-    -   Wikipedia mentions
-
-    -   Google+ mentions
-
-    -   LinkedIn mentions
-
-    -   Reddit mentions
-
-    -   Pinterest mentions
-
-    -   F1000 mentions
-
-    -   Q&A mentions
-
-    -   Video mentions
-
-    -   Sllyabi mentions
-
-    -   Number of mendeley readers
-
-    -   Number of citations
-
--   Article title
-
--   Journal title
-
--   Open access status
-
--   Subject categories
-
--   Publication date
-
--   Publisher names
-
-**What info do we not get on each source?**
-
--   Citation-based impact metrics other than the number of citations (e.g. RCR or CNCI).
-
--   Usage-based impact metrics (e.g. page views or downloads)
-
-**How can we compensate for this?**
-
--   Altmetric explorer API
+Select only the columns we need:
 
 ```{r}
 top_1_percent_n <- ceiling(0.01 * nrow(altmetrics_data))
