@@ -15,11 +15,11 @@ library(RSelenium)
 
 ```{r warning=FALSE, message=FALSE}
 # Loading data
-X5201_data <- read_csv("~/Downloads/Altmetric - Research Outputs - London School of Economics and Political Science - 2024-10-24.csv")
-X5202_data <- read_csv("~/Downloads/Altmetric - Research Outputs - London School of Economics and Political Science - 2024-10-24 (4).csv")
-X5203_data <- read_csv("~/Downloads/Altmetric - Research Outputs - London School of Economics and Political Science - 2024-10-24 (3).csv")
-X5204_data <- read_csv("~/Downloads/Altmetric - Research Outputs - London School of Economics and Political Science - 2024-10-24 (1).csv")
-X5205_data <- read_csv("~/Downloads/Altmetric - Research Outputs - London School of Economics and Political Science - 2024-10-24 (2).csv")
+X5201_data <- read_csv("~/Downloads/Data/Altmetric - Research Outputs - London School of Economics and Political Science - 2024-10-24.csv")
+X5202_data <- read_csv("~/Downloads/Data/Altmetric - Research Outputs - London School of Economics and Political Science - 2024-10-24 (4).csv")
+X5203_data <- read_csv("~/Downloads/Data/Altmetric - Research Outputs - London School of Economics and Political Science - 2024-10-24 (3).csv")
+X5204_data <- read_csv("~/Downloads/Data/Altmetric - Research Outputs - London School of Economics and Political Science - 2024-10-24 (1).csv")
+X5205_data <- read_csv("~/Downloads/Data/Altmetric - Research Outputs - London School of Economics and Political Science - 2024-10-24 (2).csv")
 
 ```
 
@@ -38,7 +38,7 @@ altmetrics_data <- distinct(altmetrics_data)
 ```
 
 ```{r}
-head(altmetrics_data)
+names(altmetrics_data)
 ```
 
 **What is included in this data:**
@@ -124,7 +124,33 @@ head(altmetrics_data)
 -   Altmetric explorer API
 
 ```{r}
-names(altmetrics_data)
+top_1_percent_n <- ceiling(0.01 * nrow(altmetrics_data))
+
+altmetrics_data_p <- altmetrics_data %>%
+  arrange(desc(`Facebook mentions`)) %>%
+  slice_head(n = top_1_percent_n)
+
+altmetrics_data_p
+
+```
+
+```{r}
+altmetrics_data <- altmetrics_data %>%
+  # Step 1: First author's affiliation
+  mutate(
+    First_Affiliation = str_split(`Affiliations (GRID)`, ";") %>% 
+      sapply(function(x) x[1]) 
+  ) %>%
+  # Step 2: Extract country from the first author's affiliation
+  mutate(
+    Country = str_extract(First_Affiliation, "\\(([^)]+)\\)|,\\s*(\\b[A-Za-z ]+\\b)$") %>%
+      str_remove_all("[\\(\\)]") 
+  )
+
+
+altmetrics_data %>%
+  select(First_Affiliation, Country) %>%
+ head(100)
 ```
 
 **Quantification of impact**
@@ -140,3 +166,37 @@ names(altmetrics_data)
 -   Citations
 
 -   Altmetrics
+
+```{r}
+
+# Define the function to query ROR API
+get_country_from_ror <- function(affiliation) {
+  # Construct the API URL for the ROR API
+  base_url <- "https://api.ror.org/organizations?query="
+  response <- GET(URLencode(paste0(base_url, affiliation)))
+
+  if (response$status_code == 200) {
+    content_json <- content(response, "text", encoding = "UTF-8")
+    results <- tryCatch(fromJSON(content_json)$items, error = function(e) NULL)
+    
+    if (!is.null(results) && length(results) > 0) {
+      country_name <- tryCatch(results[[1]]$country$country_name, error = function(e) NA)
+      return(country_name)
+    }
+  }
+  
+  return(NA)
+}
+
+altmetrics_data <- altmetrics_data %>%
+  mutate(
+    country = str_extract(
+First_Affiliation, ",\\s*([A-Za-z ]+)$") %>%
+      str_remove_all("[\\(\\)]"),
+    
+   
+    country = ifelse(is.na(country), sapply(
+First_Affiliation, get_country_from_ror), country)
+  )
+
+```
