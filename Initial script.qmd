@@ -121,15 +121,12 @@ last_century_data$DOI <- sapply(last_century_data$DOI, convert_doi_to_openalex)
 Random small sample of data:
 
 ```{r}
-sample_data <- last_century_data %>% sample_n(200)
+set.seed(1)
+sample_data <- last_century_data %>% sample_n(10000)
 
 ```
 
 OpenAlex:
-
-```{r}
-options(openalexR.mailto = "a.watt2@lse.ac.uk")
-```
 
 ```{r}
 # Function to fetch required fields using DOI
@@ -138,7 +135,7 @@ fetch_required_fields <- function(doi) {
     work <- oa_fetch(entity = "works", identifier = doi, mailto = "a.watt2@lse.ac.uk")
     # Extract required fields
     data <- list(
-      ab = ifelse(!is.null(work$ab), work$ab, NA),
+      ab = ifelse(!is.null(work$abstract), work$abstract, NA),
       so = ifelse(!is.null(work$so), work$so, NA),
       host_organization = ifelse(!is.null(work$host_organization), work$host_organization, NA),
       type = ifelse(!is.null(work$type), work$type, NA),
@@ -227,4 +224,142 @@ final_data <- cbind(last_century_data, fetched_data_df)
 
 # Print the first few rows of the final dataframe
 print(head(final_data))
+```
+
+Without openalexr:
+
+```{r}
+# Function to fetch data from OpenAlex API with a custom mailto header and retry logic
+fetch_openalex_data <- function(doi, email = "a.watt2@lse.ac.uk", max_retries = 3, delay_sec = 1) {
+  base_url <- "https://api.openalex.org/works"
+  
+  # Retry logic
+  attempt <- 1
+  while (attempt <= max_retries) {
+    response <- tryCatch({
+      url <- paste0(base_url, "/", doi)
+      res <- GET(url, 
+                 add_headers("User-Agent" = "R/OpenAlexExample",
+                             "mailto" = email))
+      
+      if (status_code(res) == 200) {
+        content(res, "parsed", type = "application/json")
+      } else {
+        stop("Failed to fetch data. Status code: ", status_code(res))
+      }
+    }, error = function(e) {
+      message("Error fetching data for DOI: ", doi, " (Attempt ", attempt, ")")
+      if (attempt < max_retries) {
+        Sys.sleep(delay_sec)
+        attempt <- attempt + 1
+      } else {
+        message("Max retries reached. Skipping DOI: ", doi)
+        return(NULL)
+      }
+    })
+    
+    if (!is.null(response)) return(response)
+  }
+  
+  return(NULL)
+}
+
+# Function to extract relevant fields from OpenAlex data
+extract_openalex_data <- function(x) {
+  if (!is.list(x)) return(NULL)
+  
+  # Extract relevant fields with nested handling
+  data <- data.frame(
+    abstract = ifelse(!is.null(x$abstract), x$abstract, NA),
+    so = ifelse(!is.null(x$primary_location$source), 
+                ifelse(!is.null(x$primary_location$source$display_name), x$primary_location$source$display_name, NA), NA),
+    host_organization = ifelse(!is.null(x$primary_location$source$host_organization_name), 
+                               x$primary_location$source$host_organization_name, NA),
+    type = ifelse(!is.null(x$type), x$type, NA),
+    is_retracted = ifelse(!is.null(x$is_retracted), x$is_retracted, NA),
+    any_repository_has_fulltext = ifelse(!is.null(x$open_access$any_repository_has_fulltext), 
+                                         x$open_access$any_repository_has_fulltext, NA),
+    language = ifelse(!is.null(x$language), x$language, NA),
+    institution_country_code = ifelse(!is.null(x$authorships),
+                                      paste(sapply(x$authorships, function(author) {
+                                        if (!is.null(author$institutions)) {
+                                          paste(sapply(author$institutions, function(inst) {
+                                            inst$country_code
+                                          }), collapse = ", ")
+                                        } else {
+                                          NA
+                                        }
+                                      }), collapse = "; "), NA),
+    stringsAsFactors = FALSE
+  )
+  
+  return(data)
+}
+
+# Apply the function to each DOI in sample_data
+fetched_data <- lapply(sample_data$DOI, function(doi) {
+  fetch_openalex_data(doi, email = "a.watt2@lse.ac.uk")  # Your email address
+})
+
+# Remove NULL entries (in case some DOIs fail)
+fetched_data <- fetched_data[!sapply(fetched_data, is.null)]
+
+# Extract the relevant fields from the fetched data
+extracted_data <- lapply(fetched_data, extract_openalex_data)
+
+# Check that all data frames have the same columns and fix column mismatches
+column_names <- c("ab", "so", "host_organization", "type", "is_retracted", 
+                  "any_repository_has_fulltext", "language", "institution_country_code")
+
+# Ensure all data frames have the same columns
+extracted_data <- lapply(extracted_data, function(df) {
+  # Add missing columns with NA if they are not present
+  missing_cols <- setdiff(column_names, names(df))
+  df[missing_cols] <- NA
+  df <- df[column_names]  # Ensure the correct column order
+  return(df)
+})
+
+# Combine all the data frames into one
+fetched_data_df <- do.call(rbind, extracted_data)
+
+# Merge the fetched data with the existing sample_data
+merged_data <- cbind(sample_data, fetched_data_df)
+
+# Print the merged dataframe
+print(merged_data)
+
+```
+
+```{r}
+merged_data_clean <- merged_data %>% 
+  select(`Title`,`ab`,`DOI`,`Publication Date`,`type`,`Journal/Collection Title`,`Publisher Names`,`host_organization`,`Funder`,`so`,`language`,`institution_country_code`,`OA Status`,`OA Type`,`any_repository_has_fulltext`,`News mentions`,`Policy mentions`, `X mentions`,`Facebook mentions`,`Number of Mendeley readers`,`Altmetric Attention Score`,`Number of Dimensions citations`,`is_retracted`)
+
+rownames(merged_data_clean) <- NULL
+```
+
+```{r}
+# Function to fetch data for a single DOI and print the full response
+fetch_and_print_openalex_data <- function(doi, email = "a.watt2@lse.ac.uk") {
+  base_url <- "https://api.openalex.org/works"
+  url <- paste0(base_url, "/", doi)
+  
+  response <- GET(url, 
+                  add_headers("User-Agent" = "R/OpenAlexExample",
+                              "mailto" = email))
+  
+  if (status_code(response) == 200) {
+    response_data <- content(response, "parsed", type = "application/json")
+    print(response_data)  # Print the full response
+    return(response_data)
+  } else {
+    stop("Failed to fetch data. Status code: ", status_code(response))
+  }
+}
+
+# Test with one DOI from your sample data
+test_doi <- sample_data$DOI[1]  # Take the first DOI as an example
+full_response <- fetch_and_print_openalex_data(test_doi)
+
+
 ```
