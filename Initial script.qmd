@@ -111,7 +111,7 @@ convert_doi_to_openalex <- function(doi) {
   return(paste0("https://doi.org/", doi))
 }
 
-# Apply the function to each DOI in sample_data
+# Apply the function to each DOI in altmetrics_data
 altmetrics_data$DOI <- sapply(altmetrics_data$DOI, convert_doi_to_openalex)
 ```
 
@@ -128,20 +128,41 @@ sample_data <- altmetrics_data %>% sample_n(10)
 
 ```
 
-```{r}
+Merge method 1:
 
-# Function to fetch data from OpenAlex API without retries or delays
-fetch_openalex_data <- function(doi, email = "a.watt2@lse.ac.uk") {
+```{r}
+# Function to fetch data from OpenAlex API with a custom mailto header and retry logic
+fetch_openalex_data <- function(doi, email = "a.watt2@lse.ac.uk", max_retries = 3, delay_sec = 1) {
   base_url <- "https://api.openalex.org/works"
   
-  url <- paste0(base_url, "/", doi)
-  res <- GET(url, add_headers("User-Agent" = "R/OpenAlexExample", "mailto" = email))
-  
-  if (status_code(res) == 200) {
-    return(content(res, "parsed", type = "application/json"))
-  } else {
-    return(NULL)  # Return NULL if the request fails
+  attempt <- 1
+  while (attempt <= max_retries) {
+    response <- tryCatch({
+      url <- paste0(base_url, "/", doi)
+      res <- GET(url, 
+                 add_headers("User-Agent" = "R/OpenAlexExample",
+                             "mailto" = email))
+      
+      if (status_code(res) == 200) {
+        content(res, "parsed", type = "application/json")
+      } else {
+        stop("Failed to fetch data. Status code: ", status_code(res))
+      }
+    }, error = function(e) {
+      message("Error fetching data for DOI: ", doi, " (Attempt ", attempt, ")")
+      if (attempt < max_retries) {
+        Sys.sleep(delay_sec)
+        attempt <- attempt + 1
+      } else {
+        message("Max retries reached. Skipping DOI: ", doi)
+        return(NULL)
+      }
+    })
+    
+    if (!is.null(response)) return(response)
   }
+  
+  return(NULL)
 }
 
 # Function to reconstruct the abstract from the inverted index
@@ -207,78 +228,182 @@ fetch_openalex_data_with_progress <- function(dois, email) {
     clear = FALSE, width = 60
   )
   
-  # Fetch data in parallel
-  fetched_data <- future_map(dois, function(doi) {
+  fetched_data <- lapply(dois, function(doi) {
     pb$tick()
     fetch_openalex_data(doi, email = email)
-  }, .options = furrr_options(seed = TRUE, packages = "httr"))
+  })
   
-  # Remove NULL entries (failed requests)
-  fetched_data <- fetched_data[!sapply(fetched_data, is.null)]
-  
+  fetched_data <- fetched_data[!sapply(fetched_data, is.null)] # Remove NULL entries
   return(fetched_data)
 }
 
-# Function to save intermediate results
-save_intermediate_results <- function(extracted_data, batch_number) {
-  saveRDS(extracted_data, paste0("extracted_data_batch_", batch_number, ".rds"))
-}
+# Fetch data with progress
+fetched_data <- fetch_openalex_data_with_progress(altmetrics_data$DOI, email = "a.watt2@lse.ac.uk")
 
-# Function to process the DOIs and save results in batches
-process_and_save_data <- function(dois, email) {
-  # Fetch data in parallel
-  fetched_data <- fetch_openalex_data_with_progress(dois, email)
+# Extract the relevant fields
+extracted_data <- lapply(fetched_data, extract_openalex_data)
+
+# Standardize column names
+column_names <- c("abstract", "so", "host_organization", "type", "is_retracted", 
+                  "any_repository_has_fulltext", "language", "publication_year", 
+                  "is_oa", "type_crossref", "countries_distinct_count", 
+                  "institutions_distinct_count", "has_fulltext", 
+                  "cited_by_count", "primary_topic_display_name", "referenced_works_count", "institution_country_code")
+
+# Ensure all data frames have the same columns
+extracted_data <- lapply(extracted_data, function(df) {
+  missing_cols <- setdiff(column_names, names(df))
+  df[missing_cols] <- NA
+  df <- df[column_names]
+  return(df)
+})
+
+# Combine all extracted data into a single data frame
+fetched_data_df <- do.call(rbind, extracted_data)
+
+# Merge fetched data with altmetrics_data
+merged_data <- cbind(altmetrics_data, fetched_data_df)
+
+```
+
+Merge method 2:
+
+```{r}
+# Function to fetch data from OpenAlex API with a custom mailto header and retry logic
+fetch_openalex_data <- function(doi, email = "a.watt2@lse.ac.uk", max_retries = 1, delay_sec = 1) {
+  base_url <- "https://api.openalex.org/works"
   
-  # Extract the relevant fields
-  extracted_data <- lapply(fetched_data, extract_openalex_data)
-  
-  # Standardize column names
-  column_names <- c("abstract", "so", "host_organization", "type", "is_retracted", 
-                    "any_repository_has_fulltext", "language", "publication_year", 
-                    "is_oa", "type_crossref", "countries_distinct_count", 
-                    "institutions_distinct_count", "has_fulltext", 
-                    "cited_by_count", "primary_topic_display_name", "referenced_works_count", 
-                    "institution_country_code")
-  
-  # Ensure all data frames have the same columns
-  extracted_data <- lapply(extracted_data, function(df) {
-    missing_cols <- setdiff(column_names, names(df))
-    df[missing_cols] <- NA
-    df <- df[column_names]
-    return(df)
-  })
-  
-  # Combine all extracted data into a single data frame
-  fetched_data_df <- do.call(rbind, extracted_data)
-  
-  # Save data in batches of 1000 records
-  batch_size <- 1000
-  num_batches <- ceiling(nrow(fetched_data_df) / batch_size)
-  
-  for (batch_number in 1:num_batches) {
-    start_row <- (batch_number - 1) * batch_size + 1
-    end_row <- min(batch_number * batch_size, nrow(fetched_data_df))
-    batch_data <- fetched_data_df[start_row:end_row, ]
+  attempt <- 1
+  while (attempt <= max_retries) {
+    response <- tryCatch({
+      url <- paste0(base_url, "/", doi)
+      res <- GET(url, 
+                 add_headers("User-Agent" = "R/OpenAlexExample",
+                             "mailto" = email))
+      
+      if (status_code(res) == 200) {
+        content(res, "parsed", type = "application/json")
+      } else {
+        stop("Failed to fetch data. Status code: ", status_code(res))
+      }
+    }, error = function(e) {
+      if (attempt < max_retries) {
+        Sys.sleep(delay_sec)
+        attempt <- attempt + 1
+      } else {
+        return(NULL)
+      }
+    })
     
-    # Save the batch to an RDS file
-    save_intermediate_results(batch_data, batch_number)
+    if (!is.null(response)) return(response)
   }
   
-  return(fetched_data_df)
+  return(NULL)
 }
 
-# Fetch and process data for the altmetrics dataset
-dois <- altmetrics_data$DOI  # Replace with your actual dataset
-email <- "a.watt2@lse.ac.uk"  # Replace with your email
+# Function to reconstruct the abstract from the inverted index
+reconstruct_abstract <- function(inverted_index) {
+  if (is.null(inverted_index)) return(NA)
+  
+  term_positions <- unlist(inverted_index, use.names = TRUE)
+  terms <- names(term_positions)
+  positions <- as.numeric(term_positions)
+  
+  # Clean up terms by removing trailing single-digit numbers
+  clean_terms <- gsub("(\\w+)[0-9]$", "\\1", terms)
+  
+  # Reconstruct abstract by sorting terms by their positions
+  sorted_terms <- clean_terms[order(positions)]
+  abstract <- paste(sorted_terms, collapse = " ")
+  
+  return(abstract)
+}
 
-final_data <- process_and_save_data(dois, email)
+# Function to extract relevant fields from OpenAlex data
+extract_openalex_data <- function(x) {
+  if (!is.list(x)) return(NULL)
+  
+  data <- data.table(
+    abstract = reconstruct_abstract(x$abstract_inverted_index),
+    so = ifelse(!is.null(x$primary_location$source$display_name), 
+                x$primary_location$source$display_name, NA),
+    host_organization = ifelse(!is.null(x$primary_location$source$host_organization_name), 
+                               x$primary_location$source$host_organization_name, NA),
+    type = ifelse(!is.null(x$type), x$type, NA),
+    is_retracted = ifelse(!is.null(x$is_retracted), x$is_retracted, NA),
+    any_repository_has_fulltext = ifelse(!is.null(x$open_access$any_repository_has_fulltext), 
+                                         x$open_access$any_repository_has_fulltext, NA),
+    language = ifelse(!is.null(x$language), x$language, NA),
+    publication_year = ifelse(!is.null(x$publication_year), x$publication_year, NA),
+    is_oa = ifelse(!is.null(x$primary_location$is_oa), x$primary_location$is_oa, NA),
+    type_crossref = ifelse(!is.null(x$type_crossref), x$type_crossref, NA),
+    countries_distinct_count = ifelse(!is.null(x$countries_distinct_count), x$countries_distinct_count, NA),
+    institutions_distinct_count = ifelse(!is.null(x$institutions_distinct_count), x$institutions_distinct_count, NA),
+    has_fulltext = ifelse(!is.null(x$has_fulltext), x$has_fulltext, NA),
+    cited_by_count = ifelse(!is.null(x$cited_by_count), x$cited_by_count, NA),
+    primary_topic_display_name = ifelse(!is.null(x$primary_topic$display_name), 
+                                       x$primary_topic$display_name, NA),
+    referenced_works_count = ifelse(!is.null(x$referenced_works_count), x$referenced_works_count, NA),
+    institution_country_code = ifelse(!is.null(x$authorships),
+                                      paste(unique(unlist(lapply(x$authorships, function(author) {
+                                        if (!is.null(author$institutions)) {
+                                          lapply(author$institutions, function(inst) inst$country_code)
+                                        }
+                                      }))), collapse = "; "), NA)
+  )
+  
+  return(data)
+}
 
-# Optionally, you can merge the processed data with the original dataset
-merged_data <- cbind(altmetrics_data, final_data)
+# Parallel processing setup
+num_cores <- detectCores() - 1
+cl <- makeCluster(num_cores)
+clusterEvalQ(cl, {
+  library(httr)
+  library(data.table)
+})
 
-# Print merged data
-print(merged_data)
+# Export the necessary functions and variables to the cluster nodes
+clusterExport(cl, c("fetch_openalex_data", "reconstruct_abstract", "extract_openalex_data"))
 
+# Progress bar wrapper with parallel processing
+fetch_openalex_data_with_progress <- function(dois, email) {
+  pb <- txtProgressBar(min = 0, max = length(dois), style = 3)
+  
+  fetched_data <- pblapply(dois, function(doi) {
+    res <- fetch_openalex_data(doi, email = email)
+    if (getTxtProgressBar(pb) %% 1000 == 0) {
+      setTxtProgressBar(pb, getTxtProgressBar(pb) + 1)
+    }
+    return(res)
+  }, cl = cl)
+  
+  fetched_data <- fetched_data[!sapply(fetched_data, is.null)] # Remove NULL entries
+  return(fetched_data)
+}
+
+# Fetch data with progress
+batch_size <- 1000
+num_batches <- ceiling(length(altmetrics_data$DOI) / batch_size)
+fetched_data_list <- list()
+
+for (i in 1:num_batches) {
+  start_idx <- (i - 1) * batch_size + 1
+  end_idx <- min(i * batch_size, length(altmetrics_data$DOI))
+  batch_dois <- altmetrics_data$DOI[start_idx:end_idx]
+  
+  fetched_data_batch <- fetch_openalex_data_with_progress(batch_dois, email = "a.watt2@lse.ac.uk")
+  fetched_data_list[[i]] <- rbindlist(lapply(fetched_data_batch, extract_openalex_data), fill = TRUE)
+}
+
+# Combine all batches into a single data table
+fetched_data_dt <- rbindlist(fetched_data_list, fill = TRUE)
+
+# Merge fetched data with altmetrics_data
+merged_data <- cbind(altmetrics_data, fetched_data_dt)
+
+# Stop the cluster
+stopCluster(cl)
 ```
 
 ```{r}
@@ -289,5 +414,6 @@ rownames(merged_data_clean) <- NULL
 ```
 
 ```{r}
+merged_data_clean$social_media_mentions <- merged_data_clean$`Facebook mentions` + merged_data_clean$`X mentions`
 
 ```
