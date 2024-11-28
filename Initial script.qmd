@@ -9,22 +9,27 @@ editor: visual
 ### Packages
 
 ```{r include=FALSE}
-# Packages
 library(readr)
 library(tidyverse)
 library(dplyr)
 library(stringr)
 library(RSelenium)
 library(openalexR)
+library(essurvey)
+library(purrr)
+library(progress)
+library(furrr)
+library(parallel)
+library(future.apply)
 ```
 
 ### Data
 
-```{r}
+```{r include=FALSE}
 altmetrics_data <- read_csv("altmetrics_data.csv")
 ```
 
-Select only the columns we need:
+Top 1%:
 
 ```{r}
 top_1_percent_n <- ceiling(0.01 * nrow(altmetrics_data))
@@ -36,6 +41,8 @@ altmetrics_data_p <- altmetrics_data %>%
 altmetrics_data_p
 
 ```
+
+Country affiliation
 
 ```{r}
 altmetrics_data <- altmetrics_data %>%
@@ -55,20 +62,6 @@ altmetrics_data %>%
   select(First_Affiliation, Country) %>%
  head(100)
 ```
-
-**Quantification of impact**
-
--   Policy mentions
-
--   Social media mentions (combined facebook, linkedin reddit, x)
-
--   News mentions
-
--   Patents
-
--   Citations
-
--   Altmetrics
 
 ```{r}
 
@@ -102,4 +95,136 @@ First_Affiliation, ",\\s*([A-Za-z ]+)$") %>%
 First_Affiliation, get_country_from_ror), country)
   )
 
+```
+
+21st Century:
+
+```{r}
+altmetrics_data$`Publication Date` <- as.Date(altmetrics_data$`Publication Date`, format = "%Y-%m-%d")
+```
+
+```{r}
+last_century_data <- altmetrics_data %>%
+  filter(`Publication Date` >= as.Date("2000-01-01"))
+```
+
+```{r}
+# Function to convert DOIs to OpenAlex format
+convert_doi_to_openalex <- function(doi) {
+  return(paste0("https://doi.org/", doi))
+}
+
+# Apply the function to each DOI in sample_data
+last_century_data$DOI <- sapply(last_century_data$DOI, convert_doi_to_openalex)
+```
+
+Random small sample of data:
+
+```{r}
+sample_data <- last_century_data %>% sample_n(200)
+
+```
+
+OpenAlex:
+
+```{r}
+options(openalexR.mailto = "a.watt2@lse.ac.uk")
+```
+
+```{r}
+# Function to fetch required fields using DOI
+fetch_required_fields <- function(doi) {
+  tryCatch({
+    work <- oa_fetch(entity = "works", identifier = doi, mailto = "a.watt2@lse.ac.uk")
+    # Extract required fields
+    data <- list(
+      ab = ifelse(!is.null(work$ab), work$ab, NA),
+      so = ifelse(!is.null(work$so), work$so, NA),
+      host_organization = ifelse(!is.null(work$host_organization), work$host_organization, NA),
+      type = ifelse(!is.null(work$type), work$type, NA),
+      is_retracted = ifelse(!is.null(work$is_retracted), work$is_retracted, NA),
+      any_repository_has_fulltext = ifelse(!is.null(work$any_repository_has_fulltext), work$any_repository_has_fulltext, NA),
+      language = ifelse(!is.null(work$language), work$language, NA),
+      
+      # Handle nested data structure for author institutions and country codes
+      institution_country_code = ifelse(!is.null(work$author), 
+                                        paste(sapply(work$author, function(author) {
+                                          # If the author has institutions, extract and collapse country codes
+                                          if (!is.null(author$institutions)) {
+                                            paste(sapply(author$institutions, function(inst) {
+                                              inst$country_code
+                                            }), collapse = ", ")
+                                          } else {
+                                            NA
+                                          }
+                                        }), collapse = "; "), NA)
+    )
+    return(data)
+  }, error = function(e) {
+    message("Error fetching data for DOI: ", doi)
+    return(NULL)
+  })
+}
+
+# Apply the function to each DOI in sample_data
+fetched_data <- lapply(sample_data$DOI, fetch_required_fields)
+
+# Remove NULL entries
+fetched_data <- fetched_data[!sapply(fetched_data, is.null)]
+
+# Convert the list of fetched data into a dataframe
+fetched_data_df <- do.call(rbind, lapply(fetched_data, as.data.frame))
+
+# Merge the fetched data with the existing sample_data
+merged_data <- cbind(sample_data, fetched_data_df)
+
+# Print the merged dataframe
+print(merged_data)
+
+```
+
+```{r}
+# Function to fetch required fields using DOI
+fetch_required_fields <- function(doi) {
+  tryCatch({
+    work <- oa_fetch(entity = "works", identifier = doi, mailto = "a.watt2@lse.ac.uk")
+    # Extract required fields
+    data <- list(
+      ab = ifelse(!is.null(work$ab), work$ab, NA),
+      so = ifelse(!is.null(work$so), work$so, NA),
+      host_organization = ifelse(!is.null(work$host_organization), work$host_organization, NA),
+      type = ifelse(!is.null(work$type), work$type, NA),
+      is_retracted = ifelse(!is.null(work$is_retracted), work$is_retracted, NA),
+      any_repository_has_fulltext = ifelse(!is.null(work$any_repository_has_fulltext), work$any_repository_has_fulltext, NA),
+      language = ifelse(!is.null(work$language), work$language, NA),
+      institution_country_code = ifelse(!is.null(work$author), 
+                                        paste(sapply(work$author, function(author) {
+                                          paste(author$institutions$country_code, collapse = ", ")
+                                        }), collapse = "; "), NA)
+    )
+    return(data)
+  }, error = function(e) {
+    message("Error fetching data for DOI: ", doi)
+    return(NULL)
+  })
+}
+
+# Set up parallel processing
+plan(multisession, workers = availableCores() - 1)
+
+
+# Fetch data for all DOIs in parallel
+fetched_data <- future_lapply(last_century_data$DOI, fetch_required_fields)
+
+# Remove NULL entries
+fetched_data <- fetched_data[!sapply(fetched_data, is.null)]
+
+# Convert the list of fetched data into a dataframe
+fetched_data_df <- do.call(rbind, lapply(fetched_data, as.data.frame))
+
+# Merge the fetched data with the existing last_century_data
+final_data <- cbind(last_century_data, fetched_data_df)
+
+# Print the first few rows of the final dataframe
+print(head(final_data))
 ```
