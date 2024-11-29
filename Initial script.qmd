@@ -37,7 +37,7 @@ Top 1%:
 top_1_percent_n <- ceiling(0.01 * nrow(altmetrics_data))
 
 altmetrics_data_p <- altmetrics_data %>%
-  arrange(desc(`Facebook mentions`)) %>%
+  arrange(desc(`Policy mentions`)) %>%
   slice_head(n = top_1_percent_n)
 
 altmetrics_data_p
@@ -132,7 +132,7 @@ Merge method 1:
 
 ```{r}
 # Function to fetch data from OpenAlex API with a custom mailto header and retry logic
-fetch_openalex_data <- function(doi, email = "a.watt2@lse.ac.uk", max_retries = 3, delay_sec = 1) {
+fetch_openalex_data <- function(doi, email = "a.watt2@lse.ac.uk", max_retries = 1, delay_sec = 1) {
   base_url <- "https://api.openalex.org/works"
   
   attempt <- 1
@@ -266,144 +266,145 @@ merged_data <- cbind(altmetrics_data, fetched_data_df)
 
 ```
 
-Merge method 2:
-
 ```{r}
-# Function to fetch data from OpenAlex API with a custom mailto header and retry logic
-fetch_openalex_data <- function(doi, email = "a.watt2@lse.ac.uk", max_retries = 1, delay_sec = 1) {
+# Function to fetch data from OpenAlex API with retry delay
+fetch_openalex_data <- function(doi, email = "a.watt2@lse.ac.uk", max_retries = 1, delay_sec = 0.5) {
   base_url <- "https://api.openalex.org/works"
-  
   attempt <- 1
+  
   while (attempt <= max_retries) {
     response <- tryCatch({
       url <- paste0(base_url, "/", doi)
-      res <- GET(url, 
-                 add_headers("User-Agent" = "R/OpenAlexExample",
-                             "mailto" = email))
+      res <- request(url) %>%
+        req_headers(
+          "User-Agent" = "R/OpenAlexExample",
+          "mailto" = email
+        ) %>%
+        req_perform()
       
-      if (status_code(res) == 200) {
-        content(res, "parsed", type = "application/json")
+      if (res$status_code == 200) {
+        res %>% resp_body_json()
       } else {
-        stop("Failed to fetch data. Status code: ", status_code(res))
+        stop("Failed to fetch data. Status code: ", res$status_code)
       }
     }, error = function(e) {
-      if (attempt < max_retries) {
-        Sys.sleep(delay_sec)
-        attempt <- attempt + 1
-      } else {
-        return(NULL)
-      }
+      NULL  # Return NULL on errors
     })
     
+    # Return successful response or retry after delay
     if (!is.null(response)) return(response)
+    if (attempt < max_retries) Sys.sleep(delay_sec)
+    attempt <- attempt + 1
   }
   
-  return(NULL)
+  return(NULL)  # Return NULL if all retries fail
 }
 
-# Function to reconstruct the abstract from the inverted index
-reconstruct_abstract <- function(inverted_index) {
-  if (is.null(inverted_index)) return(NA)
-  
-  term_positions <- unlist(inverted_index, use.names = TRUE)
-  terms <- names(term_positions)
-  positions <- as.numeric(term_positions)
-  
-  # Clean up terms by removing trailing single-digit numbers
-  clean_terms <- gsub("(\\w+)[0-9]$", "\\1", terms)
-  
-  # Reconstruct abstract by sorting terms by their positions
-  sorted_terms <- clean_terms[order(positions)]
-  abstract <- paste(sorted_terms, collapse = " ")
-  
-  return(abstract)
+# Vectorized function to reconstruct abstract
+reconstruct_abstract <- function(inverted_index_list) {
+  sapply(inverted_index_list, function(inverted_index) {
+    if (is.null(inverted_index)) return(NA)
+    term_positions <- unlist(inverted_index, use.names = TRUE)
+    terms <- names(term_positions)
+    positions <- as.numeric(term_positions)
+    clean_terms <- gsub("(\\w+)[0-9]$", "\\1", terms)
+    paste(clean_terms[order(positions)], collapse = " ")
+  })
 }
 
-# Function to extract relevant fields from OpenAlex data
+# Function to extract relevant fields into a data.table
 extract_openalex_data <- function(x) {
   if (!is.list(x)) return(NULL)
-  
-  data <- data.table(
+  data.table(
     abstract = reconstruct_abstract(x$abstract_inverted_index),
-    so = ifelse(!is.null(x$primary_location$source$display_name), 
-                x$primary_location$source$display_name, NA),
-    host_organization = ifelse(!is.null(x$primary_location$source$host_organization_name), 
-                               x$primary_location$source$host_organization_name, NA),
-    type = ifelse(!is.null(x$type), x$type, NA),
-    is_retracted = ifelse(!is.null(x$is_retracted), x$is_retracted, NA),
-    any_repository_has_fulltext = ifelse(!is.null(x$open_access$any_repository_has_fulltext), 
-                                         x$open_access$any_repository_has_fulltext, NA),
-    language = ifelse(!is.null(x$language), x$language, NA),
-    publication_year = ifelse(!is.null(x$publication_year), x$publication_year, NA),
-    is_oa = ifelse(!is.null(x$primary_location$is_oa), x$primary_location$is_oa, NA),
-    type_crossref = ifelse(!is.null(x$type_crossref), x$type_crossref, NA),
-    countries_distinct_count = ifelse(!is.null(x$countries_distinct_count), x$countries_distinct_count, NA),
-    institutions_distinct_count = ifelse(!is.null(x$institutions_distinct_count), x$institutions_distinct_count, NA),
-    has_fulltext = ifelse(!is.null(x$has_fulltext), x$has_fulltext, NA),
-    cited_by_count = ifelse(!is.null(x$cited_by_count), x$cited_by_count, NA),
-    primary_topic_display_name = ifelse(!is.null(x$primary_topic$display_name), 
-                                       x$primary_topic$display_name, NA),
-    referenced_works_count = ifelse(!is.null(x$referenced_works_count), x$referenced_works_count, NA),
-    institution_country_code = ifelse(!is.null(x$authorships),
-                                      paste(unique(unlist(lapply(x$authorships, function(author) {
-                                        if (!is.null(author$institutions)) {
-                                          lapply(author$institutions, function(inst) inst$country_code)
-                                        }
-                                      }))), collapse = "; "), NA)
+    so = x$primary_location$source$display_name %||% NA,
+    host_organization = x$primary_location$source$host_organization_name %||% NA,
+    type = x$type %||% NA,
+    is_retracted = x$is_retracted %||% NA,
+    any_repository_has_fulltext = x$open_access$any_repository_has_fulltext %||% NA,
+    language = x$language %||% NA,
+    publication_year = x$publication_year %||% NA,
+    is_oa = x$primary_location$is_oa %||% NA,
+    type_crossref = x$type_crossref %||% NA,
+    countries_distinct_count = x$countries_distinct_count %||% NA,
+    institutions_distinct_count = x$institutions_distinct_count %||% NA,
+    has_fulltext = x$has_fulltext %||% NA,
+    cited_by_count = x$cited_by_count %||% NA,
+    primary_topic_display_name = x$primary_topic$display_name %||% NA,
+    referenced_works_count = x$referenced_works_count %||% NA,
+    institution_country_code = if (!is.null(x$authorships)) {
+      paste(unique(unlist(lapply(x$authorships, function(author) {
+        if (!is.null(author$institutions)) {
+          lapply(author$institutions, function(inst) inst$country_code)
+        }
+      }))), collapse = "; ")
+    } else NA
   )
-  
-  return(data)
 }
 
-# Parallel processing setup
-num_cores <- detectCores() - 1
-cl <- makeCluster(num_cores)
-clusterEvalQ(cl, {
-  library(httr)
-  library(data.table)
-})
-
-# Export the necessary functions and variables to the cluster nodes
-clusterExport(cl, c("fetch_openalex_data", "reconstruct_abstract", "extract_openalex_data"))
-
-# Progress bar wrapper with parallel processing
+# Fetch data with progress and parallel processing
 fetch_openalex_data_with_progress <- function(dois, email) {
-  pb <- txtProgressBar(min = 0, max = length(dois), style = 3)
+  pb <- progress_bar$new(
+    total = length(dois),
+    format = "  Fetching [:bar] :percent (:current/:total) ETA: :eta",
+    clear = FALSE, width = 60
+  )
   
-  fetched_data <- pblapply(dois, function(doi) {
-    res <- fetch_openalex_data(doi, email = email)
-    if (getTxtProgressBar(pb) %% 1000 == 0) {
-      setTxtProgressBar(pb, getTxtProgressBar(pb) + 1)
-    }
-    return(res)
-  }, cl = cl)
+  # Plan for parallelization
+  plan(multisession)
   
-  fetched_data <- fetched_data[!sapply(fetched_data, is.null)] # Remove NULL entries
-  return(fetched_data)
+  # Process data in chunks to handle progress bar
+  results <- vector("list", length(dois))
+  chunk_size <- 100
+  for (i in seq(1, length(dois), by = chunk_size)) {
+    chunk_indices <- i:min(i + chunk_size - 1, length(dois))
+    chunk_dois <- dois[chunk_indices]
+    
+    # Fetch data in parallel for the current chunk
+    chunk_results <- future_map(chunk_dois, function(doi) {
+      fetch_openalex_data(doi, email = email)
+    }, .options = furrr_options(seed = TRUE))
+    
+    # Store results and update progress bar
+    results[chunk_indices] <- chunk_results
+    pb$tick(length(chunk_indices))
+  }
+  
+  # Remove NULL entries
+  results <- results[!sapply(results, is.null)]
+  return(results)
 }
 
 # Fetch data with progress
-batch_size <- 1000
-num_batches <- ceiling(length(altmetrics_data$DOI) / batch_size)
-fetched_data_list <- list()
+fetched_data <- fetch_openalex_data_with_progress(altmetrics_data$DOI, email = "a.watt2@lse.ac.uk")
 
-for (i in 1:num_batches) {
-  start_idx <- (i - 1) * batch_size + 1
-  end_idx <- min(i * batch_size, length(altmetrics_data$DOI))
-  batch_dois <- altmetrics_data$DOI[start_idx:end_idx]
-  
-  fetched_data_batch <- fetch_openalex_data_with_progress(batch_dois, email = "a.watt2@lse.ac.uk")
-  fetched_data_list[[i]] <- rbindlist(lapply(fetched_data_batch, extract_openalex_data), fill = TRUE)
-}
+# Extract the relevant fields
+extracted_data <- lapply(fetched_data, extract_openalex_data)
 
-# Combine all batches into a single data table
-fetched_data_dt <- rbindlist(fetched_data_list, fill = TRUE)
+# Standardize column names
+column_names <- c(
+  "abstract", "so", "host_organization", "type", "is_retracted", 
+  "any_repository_has_fulltext", "language", "publication_year", 
+  "is_oa", "type_crossref", "countries_distinct_count", 
+  "institutions_distinct_count", "has_fulltext", 
+  "cited_by_count", "primary_topic_display_name", "referenced_works_count", "institution_country_code"
+)
+
+# Ensure all data tables have the same columns
+extracted_data <- lapply(extracted_data, function(dt) {
+  missing_cols <- setdiff(column_names, names(dt))
+  dt[, (missing_cols) := NA]
+  dt <- dt[, ..column_names]
+  return(dt)
+})
+
+# Combine all extracted data into a single data table
+fetched_data_dt <- rbindlist(extracted_data, fill = TRUE)
 
 # Merge fetched data with altmetrics_data
 merged_data <- cbind(altmetrics_data, fetched_data_dt)
 
-# Stop the cluster
-stopCluster(cl)
+
 ```
 
 ```{r}
