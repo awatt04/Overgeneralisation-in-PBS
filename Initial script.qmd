@@ -4,135 +4,47 @@ format: html
 editor: visual
 ---
 
-```{r warning=FALSE, message=FALSE}
-# Packages
+## Preliminaries: packages and data loading
+
+### Packages
+
+```{r include=FALSE}
 library(readr)
 library(tidyverse)
 library(dplyr)
 library(stringr)
 library(RSelenium)
+library(openalexR)
+library(essurvey)
+library(purrr)
+library(progress)
+library(furrr)
+library(parallel)
+library(future.apply)
+library(httr)
+library(jsonlite)
 ```
 
-```{r warning=FALSE, message=FALSE}
-# Loading data
-X5201_data <- read_csv("~/Downloads/Data/Altmetric - Research Outputs - London School of Economics and Political Science - 2024-10-24.csv")
-X5202_data <- read_csv("~/Downloads/Data/Altmetric - Research Outputs - London School of Economics and Political Science - 2024-10-24 (4).csv")
-X5203_data <- read_csv("~/Downloads/Data/Altmetric - Research Outputs - London School of Economics and Political Science - 2024-10-24 (3).csv")
-X5204_data <- read_csv("~/Downloads/Data/Altmetric - Research Outputs - London School of Economics and Political Science - 2024-10-24 (1).csv")
-X5205_data <- read_csv("~/Downloads/Data/Altmetric - Research Outputs - London School of Economics and Political Science - 2024-10-24 (2).csv")
+### Data
 
+```{r include=FALSE}
+altmetrics_data <- read_csv("altmetrics_data.csv")
 ```
 
-## Binding Dataframes
-
-Because of the sheer number of academic articles, we've had to import them in five seperate files. We're going to bind these together into one big dataframe.
-
-```{r}
-altmetrics_data <- bind_rows(X5201_data, X5202_data, X5203_data, X5204_data, X5205_data)
-```
-
-There is some overlap between the datasets, so we'll remove duplicates.
-
-```{r}
-altmetrics_data <- distinct(altmetrics_data)
-```
-
-```{r}
-names(altmetrics_data)
-```
-
-**What is included in this data:**
-
--   All article publications in the category 'psychology' listed on Dimensions.ai database.
-
-**What isn't included:**
-
--   Books
-
--   Book chapters
-
--   Data sets
-
--   Clinical trial records
-
--   News stories
-
-**What information do we get on each source**
-
--   Impact measure: altmetrics
-
-    -   Overall altmetrics score
-
-    -   News mentions
-
-    -   Blog mentions
-
-    -   Policy mentions
-
-    -   Patent mentions
-
-    -   X mentions
-
-    -   Peer review mentions
-
-    -   Weibo mentions
-
-    -   Facebook mentions
-
-    -   Wikipedia mentions
-
-    -   Google+ mentions
-
-    -   LinkedIn mentions
-
-    -   Reddit mentions
-
-    -   Pinterest mentions
-
-    -   F1000 mentions
-
-    -   Q&A mentions
-
-    -   Video mentions
-
-    -   Sllyabi mentions
-
-    -   Number of mendeley readers
-
-    -   Number of citations
-
--   Article title
-
--   Journal title
-
--   Open access status
-
--   Subject categories
-
--   Publication date
-
--   Publisher names
-
-**What info do we not get on each source?**
-
--   Citation-based impact metrics other than the number of citations (e.g. RCR or CNCI).
-
--   Usage-based impact metrics (e.g. page views or downloads)
-
-**How can we compensate for this?**
-
--   Altmetric explorer API
+Top 1%:
 
 ```{r}
 top_1_percent_n <- ceiling(0.01 * nrow(altmetrics_data))
 
 altmetrics_data_p <- altmetrics_data %>%
-  arrange(desc(`Facebook mentions`)) %>%
+  arrange(desc(`Policy mentions`)) %>%
   slice_head(n = top_1_percent_n)
 
 altmetrics_data_p
 
 ```
+
+Country affiliation
 
 ```{r}
 altmetrics_data <- altmetrics_data %>%
@@ -152,20 +64,6 @@ altmetrics_data %>%
   select(First_Affiliation, Country) %>%
  head(100)
 ```
-
-**Quantification of impact**
-
--   Policy mentions
-
--   Social media mentions (combined facebook, linkedin reddit, x)
-
--   News mentions
-
--   Patents
-
--   Citations
-
--   Altmetrics
 
 ```{r}
 
@@ -198,5 +96,325 @@ First_Affiliation, ",\\s*([A-Za-z ]+)$") %>%
     country = ifelse(is.na(country), sapply(
 First_Affiliation, get_country_from_ror), country)
   )
+
+```
+
+21st Century:
+
+```{r}
+altmetrics_data$`Publication Date` <- as.Date(altmetrics_data$`Publication Date`, format = "%Y-%m-%d")
+```
+
+```{r}
+# Function to convert DOIs to OpenAlex format
+convert_doi_to_openalex <- function(doi) {
+  return(paste0("https://doi.org/", doi))
+}
+
+# Apply the function to each DOI in altmetrics_data
+altmetrics_data$DOI <- sapply(altmetrics_data$DOI, convert_doi_to_openalex)
+```
+
+```{r}
+last_century_data <- altmetrics_data %>%
+  filter(`Publication Date` >= as.Date("2000-01-01"))
+```
+
+Random small sample of data:
+
+```{r}
+set.seed(1)
+sample_data <- altmetrics_data %>% sample_n(10)
+
+```
+
+Merge method 1:
+
+```{r}
+# Function to fetch data from OpenAlex API with a custom mailto header and retry logic
+fetch_openalex_data <- function(doi, email = "a.watt2@lse.ac.uk", max_retries = 1, delay_sec = 1) {
+  base_url <- "https://api.openalex.org/works"
+  
+  attempt <- 1
+  while (attempt <= max_retries) {
+    response <- tryCatch({
+      url <- paste0(base_url, "/", doi)
+      res <- GET(url, 
+                 add_headers("User-Agent" = "R/OpenAlexExample",
+                             "mailto" = email))
+      
+      if (status_code(res) == 200) {
+        content(res, "parsed", type = "application/json")
+      } else {
+        stop("Failed to fetch data. Status code: ", status_code(res))
+      }
+    }, error = function(e) {
+      message("Error fetching data for DOI: ", doi, " (Attempt ", attempt, ")")
+      if (attempt < max_retries) {
+        Sys.sleep(delay_sec)
+        attempt <- attempt + 1
+      } else {
+        message("Max retries reached. Skipping DOI: ", doi)
+        return(NULL)
+      }
+    })
+    
+    if (!is.null(response)) return(response)
+  }
+  
+  return(NULL)
+}
+
+# Function to reconstruct the abstract from the inverted index
+reconstruct_abstract <- function(inverted_index) {
+  if (is.null(inverted_index)) return(NA)
+  
+  term_positions <- unlist(inverted_index, use.names = TRUE)
+  terms <- names(term_positions)
+  positions <- as.numeric(term_positions)
+  
+  # Clean up terms by removing trailing single-digit numbers
+  clean_terms <- gsub("(\\w+)[0-9]$", "\\1", terms)
+  
+  # Reconstruct abstract by sorting terms by their positions
+  sorted_terms <- clean_terms[order(positions)]
+  abstract <- paste(sorted_terms, collapse = " ")
+  
+  return(abstract)
+}
+
+# Function to extract relevant fields from OpenAlex data
+extract_openalex_data <- function(x) {
+  if (!is.list(x)) return(NULL)
+  
+  data <- data.frame(
+    abstract = reconstruct_abstract(x$abstract_inverted_index),
+    so = ifelse(!is.null(x$primary_location$source$display_name), 
+                x$primary_location$source$display_name, NA),
+    host_organization = ifelse(!is.null(x$primary_location$source$host_organization_name), 
+                               x$primary_location$source$host_organization_name, NA),
+    type = ifelse(!is.null(x$type), x$type, NA),
+    is_retracted = ifelse(!is.null(x$is_retracted), x$is_retracted, NA),
+    any_repository_has_fulltext = ifelse(!is.null(x$open_access$any_repository_has_fulltext), 
+                                         x$open_access$any_repository_has_fulltext, NA),
+    language = ifelse(!is.null(x$language), x$language, NA),
+    publication_year = ifelse(!is.null(x$publication_year), x$publication_year, NA),
+    is_oa = ifelse(!is.null(x$primary_location$is_oa), x$primary_location$is_oa, NA),
+    type_crossref = ifelse(!is.null(x$type_crossref), x$type_crossref, NA),
+    countries_distinct_count = ifelse(!is.null(x$countries_distinct_count), x$countries_distinct_count, NA),
+    institutions_distinct_count = ifelse(!is.null(x$institutions_distinct_count), x$institutions_distinct_count, NA),
+    has_fulltext = ifelse(!is.null(x$has_fulltext), x$has_fulltext, NA),
+    cited_by_count = ifelse(!is.null(x$cited_by_count), x$cited_by_count, NA),
+    primary_topic_display_name = ifelse(!is.null(x$primary_topic$display_name), 
+                                       x$primary_topic$display_name, NA),
+    referenced_works_count = ifelse(!is.null(x$referenced_works_count), x$referenced_works_count, NA),
+    institution_country_code = ifelse(!is.null(x$authorships),
+                                      paste(unique(unlist(lapply(x$authorships, function(author) {
+                                        if (!is.null(author$institutions)) {
+                                          lapply(author$institutions, function(inst) inst$country_code)
+                                        }
+                                      }))), collapse = "; "), NA),
+    stringsAsFactors = FALSE
+  )
+  
+  return(data)
+}
+
+# Progress bar wrapper
+fetch_openalex_data_with_progress <- function(dois, email) {
+  pb <- progress_bar$new(
+    total = length(dois),
+    format = "  Fetching [:bar] :percent (:current/:total) ETA: :eta",
+    clear = FALSE, width = 60
+  )
+  
+  fetched_data <- lapply(dois, function(doi) {
+    pb$tick()
+    fetch_openalex_data(doi, email = email)
+  })
+  
+  fetched_data <- fetched_data[!sapply(fetched_data, is.null)] # Remove NULL entries
+  return(fetched_data)
+}
+
+# Fetch data with progress
+fetched_data <- fetch_openalex_data_with_progress(altmetrics_data$DOI, email = "a.watt2@lse.ac.uk")
+
+# Extract the relevant fields
+extracted_data <- lapply(fetched_data, extract_openalex_data)
+
+# Standardize column names
+column_names <- c("abstract", "so", "host_organization", "type", "is_retracted", 
+                  "any_repository_has_fulltext", "language", "publication_year", 
+                  "is_oa", "type_crossref", "countries_distinct_count", 
+                  "institutions_distinct_count", "has_fulltext", 
+                  "cited_by_count", "primary_topic_display_name", "referenced_works_count", "institution_country_code")
+
+# Ensure all data frames have the same columns
+extracted_data <- lapply(extracted_data, function(df) {
+  missing_cols <- setdiff(column_names, names(df))
+  df[missing_cols] <- NA
+  df <- df[column_names]
+  return(df)
+})
+
+# Combine all extracted data into a single data frame
+fetched_data_df <- do.call(rbind, extracted_data)
+
+# Merge fetched data with altmetrics_data
+merged_data <- cbind(altmetrics_data, fetched_data_df)
+
+```
+
+```{r}
+# Function to fetch data from OpenAlex API with retry delay
+fetch_openalex_data <- function(doi, email = "a.watt2@lse.ac.uk", max_retries = 1, delay_sec = 0.5) {
+  base_url <- "https://api.openalex.org/works"
+  attempt <- 1
+  
+  while (attempt <= max_retries) {
+    response <- tryCatch({
+      url <- paste0(base_url, "/", doi)
+      res <- request(url) %>%
+        req_headers(
+          "User-Agent" = "R/OpenAlexExample",
+          "mailto" = email
+        ) %>%
+        req_perform()
+      
+      if (res$status_code == 200) {
+        res %>% resp_body_json()
+      } else {
+        stop("Failed to fetch data. Status code: ", res$status_code)
+      }
+    }, error = function(e) {
+      NULL  # Return NULL on errors
+    })
+    
+    # Return successful response or retry after delay
+    if (!is.null(response)) return(response)
+    if (attempt < max_retries) Sys.sleep(delay_sec)
+    attempt <- attempt + 1
+  }
+  
+  return(NULL)  # Return NULL if all retries fail
+}
+
+# Vectorized function to reconstruct abstract
+reconstruct_abstract <- function(inverted_index_list) {
+  sapply(inverted_index_list, function(inverted_index) {
+    if (is.null(inverted_index)) return(NA)
+    term_positions <- unlist(inverted_index, use.names = TRUE)
+    terms <- names(term_positions)
+    positions <- as.numeric(term_positions)
+    clean_terms <- gsub("(\\w+)[0-9]$", "\\1", terms)
+    paste(clean_terms[order(positions)], collapse = " ")
+  })
+}
+
+# Function to extract relevant fields into a data.table
+extract_openalex_data <- function(x) {
+  if (!is.list(x)) return(NULL)
+  data.table(
+    abstract = reconstruct_abstract(x$abstract_inverted_index),
+    so = x$primary_location$source$display_name %||% NA,
+    host_organization = x$primary_location$source$host_organization_name %||% NA,
+    type = x$type %||% NA,
+    is_retracted = x$is_retracted %||% NA,
+    any_repository_has_fulltext = x$open_access$any_repository_has_fulltext %||% NA,
+    language = x$language %||% NA,
+    publication_year = x$publication_year %||% NA,
+    is_oa = x$primary_location$is_oa %||% NA,
+    type_crossref = x$type_crossref %||% NA,
+    countries_distinct_count = x$countries_distinct_count %||% NA,
+    institutions_distinct_count = x$institutions_distinct_count %||% NA,
+    has_fulltext = x$has_fulltext %||% NA,
+    cited_by_count = x$cited_by_count %||% NA,
+    primary_topic_display_name = x$primary_topic$display_name %||% NA,
+    referenced_works_count = x$referenced_works_count %||% NA,
+    institution_country_code = if (!is.null(x$authorships)) {
+      paste(unique(unlist(lapply(x$authorships, function(author) {
+        if (!is.null(author$institutions)) {
+          lapply(author$institutions, function(inst) inst$country_code)
+        }
+      }))), collapse = "; ")
+    } else NA
+  )
+}
+
+# Fetch data with progress and parallel processing
+fetch_openalex_data_with_progress <- function(dois, email) {
+  pb <- progress_bar$new(
+    total = length(dois),
+    format = "  Fetching [:bar] :percent (:current/:total) ETA: :eta",
+    clear = FALSE, width = 60
+  )
+  
+  # Plan for parallelization
+  plan(multisession)
+  
+  # Process data in chunks to handle progress bar
+  results <- vector("list", length(dois))
+  chunk_size <- 100
+  for (i in seq(1, length(dois), by = chunk_size)) {
+    chunk_indices <- i:min(i + chunk_size - 1, length(dois))
+    chunk_dois <- dois[chunk_indices]
+    
+    # Fetch data in parallel for the current chunk
+    chunk_results <- future_map(chunk_dois, function(doi) {
+      fetch_openalex_data(doi, email = email)
+    }, .options = furrr_options(seed = TRUE))
+    
+    # Store results and update progress bar
+    results[chunk_indices] <- chunk_results
+    pb$tick(length(chunk_indices))
+  }
+  
+  # Remove NULL entries
+  results <- results[!sapply(results, is.null)]
+  return(results)
+}
+
+# Fetch data with progress
+fetched_data <- fetch_openalex_data_with_progress(altmetrics_data$DOI, email = "a.watt2@lse.ac.uk")
+
+# Extract the relevant fields
+extracted_data <- lapply(fetched_data, extract_openalex_data)
+
+# Standardize column names
+column_names <- c(
+  "abstract", "so", "host_organization", "type", "is_retracted", 
+  "any_repository_has_fulltext", "language", "publication_year", 
+  "is_oa", "type_crossref", "countries_distinct_count", 
+  "institutions_distinct_count", "has_fulltext", 
+  "cited_by_count", "primary_topic_display_name", "referenced_works_count", "institution_country_code"
+)
+
+# Ensure all data tables have the same columns
+extracted_data <- lapply(extracted_data, function(dt) {
+  missing_cols <- setdiff(column_names, names(dt))
+  dt[, (missing_cols) := NA]
+  dt <- dt[, ..column_names]
+  return(dt)
+})
+
+# Combine all extracted data into a single data table
+fetched_data_dt <- rbindlist(extracted_data, fill = TRUE)
+
+# Merge fetched data with altmetrics_data
+merged_data <- cbind(altmetrics_data, fetched_data_dt)
+
+
+```
+
+```{r}
+merged_data_clean <- merged_data %>% 
+  select(`Title`,`abstract`,`DOI`,`publication_year`,`type`, `type_crossref`, `Journal/Collection Title`,`Publisher Names`,`host_organization`,`Funder`,`so`,`language`,`institution_country_code`,`countries_distinct_count`, `institutions_distinct_count`, `has_fulltext`, `is_oa`,`primary_topic_display_name`,`News mentions`,`Policy mentions`, `X mentions`,`Facebook mentions`,`Number of Mendeley readers`,`Altmetric Attention Score`,`cited_by_count`,`is_retracted`)
+
+rownames(merged_data_clean) <- NULL
+```
+
+```{r}
+merged_data_clean$social_media_mentions <- merged_data_clean$`Facebook mentions` + merged_data_clean$`X mentions`
 
 ```
