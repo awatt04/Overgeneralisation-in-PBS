@@ -1,4 +1,16 @@
+# History files
+.Rproj.user
+.Rhistory
 .DS_Store
-.gitattributes
-.gitignore
-Overgeneralisation-in-PBS.Rproj
+
+# Session Data
+.RData
+.Ruserdata
+.Renviron
+
+# Output files
+*.html
+*.docx
+*.doc
+*_files/
+models/
