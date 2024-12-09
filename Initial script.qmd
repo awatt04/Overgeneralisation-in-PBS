@@ -409,7 +409,23 @@ merged_data <- cbind(altmetrics_data, fetched_data_dt)
 
 ```{r}
 merged_data_clean <- merged_data %>% 
-  select(`Title`,`abstract`,`DOI`,`publication_year`,`type`, `type_crossref`, `Journal/Collection Title`,`Publisher Names`,`host_organization`,`Funder`,`so`,`language`,`institution_country_code`,`countries_distinct_count`, `institutions_distinct_count`, `has_fulltext`, `is_oa`,`primary_topic_display_name`,`News mentions`,`Policy mentions`, `X mentions`,`Facebook mentions`,`Number of Mendeley readers`,`Altmetric Attention Score`,`cited_by_count`,`is_retracted`)
+  select(
+    #Basic info
+    `Title`,
+    `abstract`,
+    `publication_year`,
+    `type`, #article, pre-print, paratext, letter, editorial, erratum (corrections), libguides,             supplementary-materials, review (any article that comes from a journal that                    exclusively publishes review papers).
+    #Ownership
+    `Journal/Collection Title`,
+    `Publisher Names`,
+    `host_organization`, #The host website that the DOI for the paper takes you to
+    `Funder`, # Will probably have too high missingness to be useful
+    `language`, #Language paper is originally written in
+    `institution_country_code`, #For all authors in order from first to last, the countries                                    that the insitutions they are affiliated with are in
+    `countries_distinct_count`, # Number of distinct countries in the above
+    `institutions_distinct_count`, #Number of distinct institutions of authors
+    `has_fulltext`,
+    `is_oa`,`primary_topic_display_name`,`News mentions`,`Policy mentions`, `X mentions`,`Facebook mentions`,`Number of Mendeley readers`,`Altmetric Attention Score`,`cited_by_count`,`is_retracted`)
 
 rownames(merged_data_clean) <- NULL
 ```
@@ -417,4 +433,8 @@ rownames(merged_data_clean) <- NULL
 ```{r}
 merged_data_clean$social_media_mentions <- merged_data_clean$`Facebook mentions` + merged_data_clean$`X mentions`
 
+```
+
+```{r}
+sample_merged
 ```
